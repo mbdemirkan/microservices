@@ -1,0 +1,117 @@
+version: '3'
+
+networks:
+  microservice-network:
+      driver: bridge
+      ipam:
+        config:
+          - subnet: 192.168.220.0/24
+
+volumes:
+  elasticsearch:
+    driver: local
+
+services:
+  elasticsearch:
+    environment:
+      http.host: 0.0.0.0
+      transport.host: 127.0.0.1
+    image: docker.elastic.co/elasticsearch/elasticsearch:6.2.1
+    networks:
+      microservice-network: null
+    ports:
+    - 9200:9200
+    restart: unless-stopped
+    volumes:
+    - elasticsearch:/usr/share/elasticsearch/data:rw
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash-oss:6.2.1
+    depends_on:
+    - elasticsearch
+    networks:
+      microservice-network: null
+    ports:
+    - 5044:5044
+    restart: unless-stopped
+    volumes:
+    - ./etc/logstash/pipeline:/usr/share/logstash/pipeline:ro
+
+  kibana:
+    depends_on:
+    - elasticsearch
+    environment:
+      ELASTICSEARCH_PASSWORD: changeme
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTICSEARCH_USERNAME: elastic
+    image: docker.elastic.co/kibana/kibana-oss:6.2.1
+    networks:
+      microservice-network: null
+    ports:
+    - 5601:5601
+    restart: unless-stopped
+
+  consul-agent-1: &consul-agent
+    image: consul:latest
+    networks:
+      - microservice-network
+    command: "agent -retry-join consul-server-bootstrap -client 0.0.0.0"
+
+  consul-agent-2:
+    <<: *consul-agent
+
+  consul-agent-3:
+    <<: *consul-agent
+
+  consul-server-1: &consul-server
+    <<: *consul-agent
+    networks:
+        microservice-network:
+            ipv4_address: 192.168.220.88
+    command: "agent -server -retry-join consul-server-bootstrap -client 0.0.0.0"
+
+  consul-server-2:
+    <<: *consul-server
+
+  consul-server-bootstrap:
+    <<: *consul-agent
+    ports:
+      - "8400:8400"
+      - "8500:8500"
+      - "8600:8600"
+      - "8600:8600/udp"
+    command: "agent -server -bootstrap-expect 3 -ui -client 0.0.0.0"
+
+  # Need to do the following steps:
+  #1. create /var/prometheus first.
+  #2. run: docker-compose run promdash ./bin/rake db:migrate
+
+  nodeexporter:
+    image: prom/node-exporter
+    ports:
+      - "9100:9100"
+
+  prometheus:
+    image: prom/prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./etc/prometheus/:/prometheus:ro
+      - "${PWD}/conf:/etc/custom"
+    links:
+      - nodeexporter
+    entrypoint: /bin/prometheus
+    command: "-config.file=/etc/custom/prometheus.yml -storage.local.path=/prometheus -web.console.libraries=/etc/prometheus/console_libraries -web.console.templates=/etc/prometheus/consoles"
+
+  promdash:
+    image: prom/promdash
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=sqlite3:/var/prometheus/file.sqlite3
+    volumes:
+      - "/var/prometheus:/var/prometheus"
+      - /tmp/prom:/tmp/prom
+    links:
+      - prometheus
+      - nodeexporter

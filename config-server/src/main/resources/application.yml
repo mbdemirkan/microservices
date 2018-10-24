@@ -11,6 +11,6 @@ spring:
         git:
           uri: https://github.com/mbdemirkan/microservices
           search-paths:
-          - Configurations
+              - Configurations
           basedir: target/config
 
